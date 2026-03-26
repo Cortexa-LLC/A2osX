@@ -184,6 +184,7 @@ a2osx_assemble(bin_dnsinfo   BIN/DNSINFO.S.txt     bin/dnsinfo    06 2000)
 a2osx_assemble(bin_du        BIN/DU.S.txt          bin/du         06 2000)
 a2osx_assemble(bin_edit      BIN/EDIT.S.txt        bin/edit       06 2000)
 a2osx_assemble(bin_etconfig  BIN/ETCONFIG.S.txt    bin/etconfig   06 2000)
+a2osx_assemble(bin_fg        BIN/FG.S.txt          bin/fg         06 2000)
 a2osx_assemble(bin_fnt2fon   BIN/FNT2FON.S.txt     bin/fnt2fon    06 2000)
 a2osx_assemble(bin_font2fon  BIN/FONT2FON.S.txt    bin/font2fon   06 2000)
 a2osx_assemble(bin_format    BIN/FORMAT.S.txt      bin/format     06 2000)
@@ -195,6 +196,7 @@ a2osx_assemble(bin_httpget   BIN/HTTPGET.S.txt     bin/httpget    06 2000)
 a2osx_assemble(bin_ifconfig  BIN/IFCONFIG.S.txt    bin/ifconfig   06 2000)
 a2osx_assemble(bin_irc       BIN/IRC.S.txt         bin/irc        06 2000)
 a2osx_assemble(bin_kconfig   BIN/KCONFIG.S.txt     bin/kconfig    06 2000)
+a2osx_assemble(bin_jobs      BIN/JOBS.S.txt        bin/jobs       06 2000)
 a2osx_assemble(bin_kill      BIN/KILL.S.txt        bin/kill       06 2000)
 a2osx_assemble(bin_lc        BIN/LC.S.txt          bin/lc         06 2000)
 a2osx_assemble(bin_ls        BIN/LS.S.txt          bin/ls         06 2000)
@@ -297,6 +299,7 @@ a2osx_assemble(sbin_gui      SBIN/GUI.S.txt           sbin/gui           06 2000
 a2osx_assemble(sbin_httpd    SBIN/HTTPD.S.txt         sbin/httpd         06 2000)
 a2osx_assemble(sbin_init     SBIN/INITD.S.txt         sbin/initd         06 2000)
 a2osx_assemble(sbin_insdrv   SBIN/INSDRV.S.txt        sbin/insdrv        06 2000)
+a2osx_assemble(sbin_loadapp  SBIN/LOADAPP.S.txt       sbin/loadapp       06 2000)
 a2osx_assemble(sbin_login    SBIN/LOGIN.S.txt         sbin/login         06 2000)
 a2osx_assemble(sbin_nfsd     SBIN/NFSD.S.txt          sbin/nfsd          06 2000)
 a2osx_assemble(sbin_telnetd  SBIN/TELNETD.S.txt       sbin/telnetd       06 2000)
@@ -376,7 +379,7 @@ set(FULL_TARGETS
     lib_libblkdev lib_libblkdev_o lib_libcrypt lib_libetalk
     lib_libgui lib_libgui_o lib_libtui lib_libtui_o
     sbin_bbsd sbin_cifsd sbin_getty sbin_gui sbin_httpd sbin_init
-    sbin_insdrv sbin_login sbin_nfsd sbin_telnetd sbin_vedd
+    sbin_insdrv sbin_loadapp sbin_login sbin_nfsd sbin_telnetd sbin_vedd
     sys_pm_vedrive sys_vedrive_conf)
 
 add_custom_command(

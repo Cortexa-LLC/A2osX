@@ -1,0 +1,233 @@
+NEW
+  AUTO 3,1
+				.LIST OFF
+				.OP	65C02
+				.OR	$2000
+				.TF bin/jobs
+*--------------------------------------
+				.INB inc/macros.i
+				.INB inc/a2osx.i
+				.INB inc/a2osx.api.i
+				.INB inc/kernel.i
+*--------------------------------------
+				.DUMMY
+				.OR ZPBIN
+ZS.START
+ZPPSPtr			.BS 2
+ZPCmdLinePtr	.BS 2
+ZPStatePtr		.BS 2
+MyPPID			.BS 2				our parent's PID (= shell's PID)
+MyPID			.BS 2				our own PID (skip ourselves)
+JobNum			.BS 1				running job counter [1..n]
+Index			.BS 1				pPSs[] slot byte-offset
+ZS.END
+				.ED
+*--------------------------------------
+*			File Header (16 Bytes)
+*--------------------------------------
+CS.START		cld
+				jmp (.1,x)
+				.DA #$61			6502,Level 1 (65c02)
+				.DA #2				BIN Layout Version 2
+				.DA #0				S.PS.F.SIG
+				.DA #0
+				.DA CS.END
+				.DA ID.END
+				.DA DS.END
+				.DA #64				Stack Size
+				.DA #ZS.END-ZS.START	Zero Page Size
+*--------------------------------------
+* Relocation Table
+*--------------------------------------
+.1				.DA CS.INIT
+				.DA CS.RUN
+				.DA CS.SIG
+				.DA CS.QUIT
+L.MSG.HDR		.DA MSG.HDR
+L.MSG.FMT		.DA MSG.FMT
+L.MSG.NONE		.DA MSG.NONE
+L.MSG.RUN		.DA MSG.RUN
+L.MSG.STOP		.DA MSG.STOP
+				.DA 0
+*--------------------------------------
+CS.INIT			clc
+				rts
+*--------------------------------------
+CS.RUN
+* Save our own PID and PPID (= shell's PID) from the current pPS struct.
+				ldy #S.PS.PID
+				lda (pPS),y
+				sta MyPID
+				iny
+				lda (pPS),y
+				sta MyPID+1
+
+				ldy #S.PS.PPID
+				lda (pPS),y
+				sta MyPPID
+				iny
+				lda (pPS),y
+				sta MyPPID+1
+
+* Print header line.
+				>LDYA L.MSG.HDR
+				>LIBC PutS
+
+* Reset job counter and slot index.
+				stz JobNum			* jobs seen so far = 0
+				lda #2				* start at slot index 2 (skip PS 0/kernel)
+				sta Index
+
+* ── Main enumeration loop ─────────────────────────────────────────────────
+.1				lda Index
+				>KAPI GetPSByID
+				bcs .7				* slot empty or invalid — advance
+
+				>STYA ZPPSPtr		* save pointer to this S.PS
+
+* Skip our own process entry.
+				ldy #S.PS.PID
+				lda (ZPPSPtr),y
+				cmp MyPID
+				bne .2
+				iny
+				lda (ZPPSPtr),y
+				cmp MyPID+1
+				beq .6				* same PID as us — skip
+
+* Check that this process's PPID equals the shell's PID (our PPID).
+.2				ldy #S.PS.PPID
+				lda (ZPPSPtr),y
+				cmp MyPPID
+				bne .6
+				iny
+				lda (ZPPSPtr),y
+				cmp MyPPID+1
+				bne .6
+
+* ── This process is a child of the shell (a job). ──────────────────────────
+				inc JobNum
+
+* Resolve command line string.
+				jsr CS.RUN.GetCmdLine
+
+* Determine state string: HOLD flag set → Stopped, else Running.
+				ldy #S.PS.F
+				lda (ZPPSPtr),y
+				and #S.PS.F.HOLD
+				beq .3
+
+				>LDYA L.MSG.STOP
+				bra .4
+
+.3				>LDYA L.MSG.RUN
+
+* Save state string pointer.
+.4				sta ZPStatePtr
+				sty ZPStatePtr+1
+
+* ── Print "[N] State PID CmdLine" ─────────────────────────────────────────
+				>SS
+				>PUSHW L.MSG.FMT
+
+				lda JobNum			* %d : job number (byte)
+				>PUSHA
+
+				>PUSHW ZPStatePtr	* %-8s : state string ptr
+
+				ldy #S.PS.PID+1		* %5D : PID (hi byte first, then lo)
+				lda (ZPPSPtr),y
+				>PUSHA
+				dey
+				lda (ZPPSPtr),y
+				>PUSHA
+
+				jsr CS.RUN.GetFmtCmdLine	* %s : cmd string ptr
+
+				>PUSHBI 4
+				>LIBC PrintF
+				>SR
+
+* Free the cmdline buffer if we got one.
+				>LDYA ZPCmdLinePtr
+				beq .5
+				>LIBC Free
+				stz ZPCmdLinePtr+1
+
+* Free the S.PS snapshot and advance to next slot.
+.5				>LDYA ZPPSPtr
+				>LIBC Free
+
+.7				inc Index
+				inc Index
+
+				lda Index
+				cmp #K.PS.MAX*2
+				bcc .1
+
+* Done — return success.
+				lda #0
+				clc
+				rts
+*--------------------------------------
+* CS.RUN.GetFmtCmdLine
+*   Push command line ptr (or "?" ptr) onto printf arg stack.
+*   Consults ZPCmdLinePtr.
+*--------------------------------------
+CS.RUN.GetFmtCmdLine
+				lda ZPCmdLinePtr+1
+				bne .1
+				lda ZPCmdLinePtr
+				bne .1
+				>PUSHW L.MSG.NONE
+				rts
+
+.1				>PUSHW ZPCmdLinePtr
+				rts
+*--------------------------------------
+* CS.RUN.GetCmdLine
+*   In:  ZPPSPtr → snapshot of S.PS for target process
+*   Out: ZPCmdLinePtr = heap ptr to NUL-terminated cmd string
+*                       or 0 if unavailable
+*--------------------------------------
+CS.RUN.GetCmdLine
+				stz ZPCmdLinePtr
+				stz ZPCmdLinePtr+1
+
+				ldy #S.PS.PID
+				lda (ZPPSPtr),y
+				pha
+				iny
+				lda (ZPPSPtr),y
+				ply
+
+				>KAPI GetPSCmdLine
+				bcs .9
+
+				>STYA ZPCmdLinePtr
+
+.9				rts
+*--------------------------------------
+CS.SIG			sec
+				rts
+*--------------------------------------
+CS.QUIT			clc
+				rts
+*--------------------------------------
+CS.END			.EQ *
+*--------------------------------------
+MSG.HDR			.CZ "[N]  State    PID  Command"
+MSG.FMT			.CZ "[%d] %-8s %5D %s"
+MSG.NONE		.CZ "?"
+MSG.RUN			.CZ "Running"
+MSG.STOP		.CZ "Stopped"
+*--------------------------------------
+ID.END			.EQ *
+*--------------------------------------
+				.DUMMY
+				.OR 0
+DS.END			.ED
+*--------------------------------------
+MAN
+SAVE usr/src/bin/jobs.s
+ASM

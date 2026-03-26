@@ -1,0 +1,1099 @@
+NEW
+  AUTO 3,1
+				.LIST OFF
+				.OP	65C02
+				.OR	$2000
+				.TF sbin/loadapp
+*--------------------------------------
+* SBIN/LOADAPP - ProDOS BIN/SYS host loader for A2osX
+* Version 1.0 — Phase 1 (bank load + trampoline) +
+*               Phase 2 (ProDOS MLI shim at $BF00)
+*
+* Usage:  loadapp <prodos-path> [load-addr-hex]
+*
+* Loads a ProDOS BIN ($06) or SYS ($FF) binary into a dedicated
+* RAMWorks extended AUX bank and runs it as a cooperative A2osX
+* process.  Each time-slice:
+*   CS.RUN restores the guest's 256-byte ZP → selects HostBnk →
+*   JMPs to HostPC.  When the guest calls JSR $03FC (yield vector),
+*   the trampoline switches back to bank 0, saves ZP, calls >SLEEP.
+*   On resume CS.RUN loops.
+*
+* The ProDOS MLI shim (Phase 2) patches MAIN $BF00 so that guest
+* JSR $BF00 calls land in our MLI.Shim.Dispatch handler.
+*--------------------------------------
+				.INB inc/macros.i
+				.INB inc/a2osx.i
+				.INB inc/a2osx.api.i
+				.INB inc/mli.i
+				.INB inc/io.i
+*--------------------------------------
+* Hardware constants
+*--------------------------------------
+RAMWKS.REG		.EQ $C073		RAMWorks bank-select register
+*--------------------------------------
+* Trampoline addresses
+*--------------------------------------
+YIELD.TRAM		.EQ $03FC		3-byte STZ $C073 in guest bank → switches to bank 0
+YIELD.CONT		.EQ $03FF		3-byte JMP YIELD.Handler in bank-0 → entered after STZ
+*--------------------------------------
+* ProDOS MLI shim location in MAIN
+*--------------------------------------
+MLI.ENTRY		.EQ $BF00
+*--------------------------------------
+* Zero Page allocation
+*--------------------------------------
+				.DUMMY
+				.OR ZPBIN
+ZS.START
+pFile			.BS 2			pFILE handle from FOpen
+pZPSave			.BS 2			256-byte guest ZP save buffer
+pChunkBuf		.BS 2			256-byte I/O chunk buffer
+HostBnk			.BS 1			RAMWorks bank for guest binary
+HostPC			.BS 2			guest resume PC
+LoadAddrLO		.BS 1
+LoadAddrHI		.BS 1
+bGoQuit			.BS 1			non-zero when guest calls MLI QUIT
+ZPPtr1			.BS 2
+ZPPtr2			.BS 2
+ZPPtr3			.BS 2
+ZPPtr4			.BS 2
+ZS.END
+				.ED
+*--------------------------------------
+*			File Header (16 Bytes)
+*--------------------------------------
+CS.START		cld
+				jmp (.1,x)
+				.DA #$61			6502,Level 1 (65c02)
+				.DA #2				BIN Layout Version 2
+				.DA #0				S.PS.F.SIG
+				.DA #0
+				.DA CS.END
+				.DA ID.END
+				.DA DS.END
+				.DA #128			Stack Size
+				.DA #ZS.END-ZS.START	Zero Page Size
+*--------------------------------------
+* Relocation Table
+*--------------------------------------
+.1				.DA CS.INIT
+				.DA CS.RUN
+				.DA CS.SIG
+				.DA CS.QUIT
+L.MSG.USAGE		.DA MSG.USAGE
+L.MLI.PathBuf	.DA MLI.PathBuf
+				.DA 0
+*--------------------------------------
+CS.INIT
+*--- Require at least argv[1] = path ---
+				ldy #S.PS.ARGC
+				jsr A2osX.GetPSy
+				cmp #2
+				bcs .05
+.91			lda #MLI.E.INVPATH
+.99				sec
+				rts
+
+*--- Fetch argv[1] → ZPPtr1 (path string) ---
+.05				lda #1
+				>KAPI ArgV
+				bcs .99
+				>STYA ZPPtr1
+
+*--- Default load address = $2000 ---
+				stz LoadAddrLO
+				lda #$20
+				sta LoadAddrHI
+
+*--- Optional argv[2] = hex load address override ---
+				ldy #S.PS.ARGC
+				jsr A2osX.GetPSy
+				cmp #3
+				bcc .10
+				lda #2
+				>KAPI ArgV
+				bcs .10
+				>STYA ZPPtr2
+				jsr ParseHex4		; In: ZPPtr2 → 4-char hex; Out: A=HI, X=LO
+				bcs .10
+				sta LoadAddrHI
+				stx LoadAddrLO
+
+*--- Allocate 256-byte ZP save buffer ---
+.10				>SS
+				>LDYAI 256
+				>LIBC Malloc
+				>SR
+				bcs .99
+				>STYA pZPSave
+
+*--- Allocate 256-byte read chunk buffer ---
+				>SS
+				>LDYAI 256
+				>LIBC Malloc
+				>SR
+				bcs .97
+				>STYA pChunkBuf
+				bra .15
+
+.97				>SS
+				>PUSHW pZPSave
+				>LIBC Free
+				>SR
+				lda #MLI.E.OUTOFMEM
+				bra .99
+
+*--- Open the binary file ---
+.15				>SS
+				>PUSHW ZPPtr1		; filename (from argv[1])
+				>PUSHBI O.RDONLY
+				>PUSHBI S.FI.T.BIN	; BIN or SYS both use open-as-bin
+				>PUSHWZ
+				>LIBC FOpen
+				>SR
+				bcs .95
+				>STYA pFile
+
+*--- Find a free RAMWorks bank ---
+*   A2osX.MaxBnk = number of extended banks (0 = none).
+*   We allocate "our bank + 1" for the guest.
+				lda A2osX.MaxBnk
+				beq .93
+				lda A2osX.ActBnk
+				inc
+				cmp A2osX.MaxBnk
+				bcs .93
+				sta HostBnk
+				bra .20
+.93			lda #MLI.E.NODEV
+				bra .94
+
+*--- Load file into guest bank ---
+.20				jsr LoadGuestBin
+				bcs .94
+
+*--- Install yield trampoline ---
+				jsr InstallTramp
+
+*--- Install MLI shim (Phase 2) ---
+				jsr InstallMLIShim
+
+*--- Initialise guest PC ---
+				lda LoadAddrLO
+				sta HostPC
+				lda LoadAddrHI
+				sta HostPC+1
+
+*--- Zero guest ZP in guest bank using WRITEAUX ---
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETWRITEAUX
+				ldy #0
+				tya
+.2			sta $0000,y			; write zero to guest ZP (absolute)
+				iny
+				bne .2
+				sta IO.CLRWRITEAUX
+				lda #0
+				sta RAMWKS.REG
+
+*--- Save the zeroed guest ZP to pZPSave using READAUX ---
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETREADAUX
+				ldy #0
+.3			lda $0000,y			; read from guest ZP (absolute)
+				sta (pZPSave),y		; write to our buffer
+				iny
+				bne .3
+				sta IO.CLRREADAUX
+				lda #0
+				sta RAMWKS.REG
+
+				stz bGoQuit
+
+*--- Close file, free chunk buffer ---
+				>SS
+				>PUSHW pFile
+				>LIBC FClose
+				>SR
+				>SS
+				>PUSHW pChunkBuf
+				>LIBC Free
+				>SR
+
+				clc
+				rts
+
+*--- Error paths ---
+.94			pha
+				>SS
+				>PUSHW pFile
+				>LIBC FClose
+				>SR
+				pla
+				bra .96
+
+.95			pha					; save error code
+.96			>SS
+				>PUSHW pZPSave
+				>LIBC Free
+				>SR
+				>SS
+				>PUSHW pChunkBuf
+				>LIBC Free
+				>SR
+				pla					; error code
+				sec
+				rts
+
+*======================================
+* ParseHex4
+* In:  ZPPtr2 → 4-char ASCII hex string
+* Out: CC → A=hi byte, X=lo byte  / CS → parse error
+*======================================
+ParseHex4
+				ldy #0
+				jsr .8
+				asl
+				asl
+				asl
+				asl
+				sta ZPPtr3
+
+				ldy #1
+				jsr .8
+				ora ZPPtr3
+				sta ZPPtr3
+
+				ldy #2
+				jsr .8
+				asl
+				asl
+				asl
+				asl
+				sta ZPPtr3+1
+
+				ldy #3
+				jsr .8
+				ora ZPPtr3+1
+				tax
+				lda ZPPtr3
+				clc
+				rts
+
+.8			lda (ZPPtr2),y
+				cmp #'0'
+				bcc .9
+				cmp #'9'+1
+				bcc .5
+				cmp #'A'
+				bcc .9
+				cmp #'F'+1
+				bcc .6
+				cmp #'a'
+				bcc .9
+				cmp #'f'+1
+				bcs .9
+				sbc #'a'-10-1
+				clc
+				rts
+.5			sbc #'0'-1
+				clc
+				rts
+.6			sbc #'A'-10-1
+				clc
+				rts
+.9			sec
+				rts
+
+*======================================
+* LoadGuestBin
+* Read pFile into HostBnk AUX starting at (LoadAddrHI,LoadAddrLO).
+* Uses pChunkBuf as intermediate staging buffer.
+*======================================
+LoadGuestBin
+				lda LoadAddrLO
+				sta ZPPtr1
+				lda LoadAddrHI
+				sta ZPPtr1+1
+
+.1
+*   Read one 256-byte chunk from file into pChunkBuf
+				>SS
+				>PUSHW pFile
+				>PUSHW pChunkBuf
+				>PUSHWI 256
+				>LIBC FRead
+				>SR
+				bcs .8			; EOF or error: done
+
+*   Save Y (count hi) before copy loop destroys registers
+				sty ZPPtr3			; count hi (Y=1 means 256, Y=0 means <256)
+				sta ZPPtr3+1		; count lo (not needed but save for completeness)
+
+*   Zero-zero → EOF (should not happen with CC but be safe)
+				cpy #0
+				bne .2
+				cmp #0
+				beq .8			; 0,0 → EOF
+
+.2
+*   Copy pChunkBuf → guest bank at ZPPtr1
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETWRITEAUX
+
+				ldy #0
+.3			lda (pChunkBuf),y
+				sta (ZPPtr1),y
+				iny
+				bne .3
+
+*   Restore to bank 0
+				lda #0
+				sta RAMWKS.REG
+				sta IO.CLRWRITEAUX
+
+*   Advance destination by 256
+				inc ZPPtr1+1
+
+*   FRead Y,A = count.  256 → Y=1,A=0.  <256 → Y=0,A=1..255.
+*   If we read exactly 256 bytes (ZPPtr3=1), try to read next chunk.
+				lda ZPPtr3
+				bne .1			; Y was 1 → full 256-byte block, read more
+*   Partial block → done
+.8			clc
+				rts
+
+*======================================
+* InstallTramp
+* Write STZ $C073 (9C 73 C0) to guest bank at $03FC.
+* Write JMP YIELD.Handler (4C lo hi) to bank-0 AUX at $03FF.
+*======================================
+InstallTramp
+*--- 1. Guest bank: write STZ $C073 at $03FC ---
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETWRITEAUX
+
+				lda #$9C			; STZ abs opcode
+				sta YIELD.TRAM+0
+				lda #<RAMWKS.REG
+				sta YIELD.TRAM+1
+				lda #>RAMWKS.REG
+				sta YIELD.TRAM+2
+
+				lda #0
+				sta RAMWKS.REG
+				sta IO.CLRWRITEAUX
+
+*--- 2. Bank-0: write JMP YIELD.Handler at $03FF ---
+*   This write goes to OUR bank (bank 0 AUX) directly.
+				lda #$4C			; JMP abs opcode
+				sta YIELD.CONT+0
+				lda #<YIELD.Handler
+				sta YIELD.CONT+1
+				lda #>YIELD.Handler
+				sta YIELD.CONT+2
+				rts
+
+*======================================
+* InstallMLIShim
+* Write JMP MLI.Shim.Dispatch to MAIN $BF00.
+* Temporarily clear WRITEAUX so the patch lands in MAIN.
+*======================================
+InstallMLIShim
+				sta IO.CLRWRITEAUX
+
+				lda #$4C
+				sta MLI.ENTRY+0
+				lda #<MLI.Shim.Dispatch
+				sta MLI.ENTRY+1
+				lda #>MLI.Shim.Dispatch
+				sta MLI.ENTRY+2
+
+				sta IO.SETWRITEAUX
+				rts
+
+*======================================
+* CS.RUN – called each cooperative time-slice by A2osX kernel.
+*
+* Flow:
+*  1.  bGoQuit? → return SEC (process exits)
+*  2.  Restore 256-byte guest ZP (select HostBnk + ALTZP).
+*  3.  Patch self-modifying JMP with HostPC.
+*  4.  JMP into guest bank at HostPC.
+*     [guest runs until JSR $03FC yield call]
+*  5.  Yield trampoline: STZ $C073 → bank 0; JMP YIELD.Handler.
+*  6.  YIELD.Handler: save guest ZP, update HostPC, >SLEEP.
+*  7.  After SLEEP resume: CS.RUN is called again; loop to step 1.
+*======================================
+CS.RUN
+				lda bGoQuit
+				bne .9
+
+*--- Restore 256-byte guest ZP using WRITEAUX + absolute addresses ---
+*   WRITEAUX + HostBnk: writes to guest AUX $0000-$00FF = guest ZP.
+*   Our ZP (pZPSave etc.) remains accessible (ALTZP is NOT set).
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETWRITEAUX
+
+				ldy #0
+.2			lda (pZPSave),y		; read from our save buffer
+				sta $0000,y			; write to guest ZP (absolute, guest AUX)
+				iny
+				bne .2
+
+				sta IO.CLRWRITEAUX
+				; HostBnk still selected via RAMWKS.REG
+
+*--- Patch self-modifying JMP instruction ---
+				lda HostPC
+				sta .3+1
+				lda HostPC+1
+				sta .3+2
+
+*--- JMP into guest bank at HostPC ---
+.3			jmp $0000			; operand patched above
+
+.9			sec
+				rts
+
+*======================================
+* YIELD.Handler
+*
+* Entry: bank 0 AUX is active (after STZ $C073 in guest bank $03FC).
+*        ALTZP may be in any state.
+*
+* Algorithm:
+*  1. Read return address pushed by guest's JSR $03FC from GUEST page-1
+*     (via HostBnk + ALTZP).  This is the guest resume PC - 1; add 1.
+*  2. Restore ALTZP on (HostBnk) to save 256-byte guest ZP.
+*  3. Clear ALTZP, bank 0.
+*  4. >SLEEP.
+*  5. On resume: restore guest ZP → select HostBnk → JMP HostPC.
+*
+* Stack note:
+*   The JSR $03FC pushes (return_addr_hi, return_addr_lo) where
+*   return_addr = PC+2 = $03FC+3 = $03FF... wait: JSR $03FC is a 3-byte
+*   instruction at some address inside the guest code.  The return
+*   address pushed is the address of the byte AFTER the JSR (last byte
+*   of JSR is PC+2; ProDOS convention stores PC+2-1).  Actually:
+*   6502 JSR pushes PC+2-1 (high byte first, then low byte).
+*   So stack = [hi of (callerPC+2), lo of (callerPC+2)] (grows down).
+*   PLA gives lo, then PLA gives hi.  To get resume addr: add 1.
+*   But the call was JSR $03FC which is 3 bytes; resume = caller_PC+3.
+*   The pushed value is caller_PC+2 (the RTS convention, RTS adds 1).
+*   So: pulled lo/hi = caller_PC+2; add 1 → caller_PC+3 = true resume.
+*======================================
+YIELD.Handler
+*   Bank 0 AUX is active (after STZ $C073).
+*   ALTZP may be in any state; clear it to ensure our ZP is accessible.
+				sta IO.CLRALTZP
+
+*--- Pop return address from guest page-1 via ALTZP ---
+*   ALTZP on → PLA reads from guest page-1 (bank N).
+*   After PLA, keep values in registers until ALTZP is cleared.
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETALTZP
+
+				pla					; lo byte of (JSR caller_PC+2)
+				tax					; save lo in X
+				pla					; hi byte of (JSR caller_PC+2)
+				; A=hi, X=lo of (caller_PC+2)
+
+*--- Clear ALTZP now: our ZP is accessible again ---
+				sta IO.CLRALTZP
+
+*--- Store return addr + 1 into HostPC (our ZP now ok) ---
+				stx HostPC			; lo
+				sta HostPC+1		; hi
+*   JSR pushes caller_PC+2 (RTS pops and adds 1).
+*   The resume address in the guest = caller_PC+3.
+*   (caller_PC+2)+1 = caller_PC+3 – which is the byte after JSR $03FC.
+				inc HostPC
+				bne .1
+				inc HostPC+1
+.1
+
+*--- Save 256-byte guest ZP using READAUX (no ALTZP) ---
+*   READAUX + HostBnk: absolute reads from guest AUX $0000-$00FF = guest ZP.
+*   (pZPSave) uses our ZP normally (ALTZP is off).
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETREADAUX
+
+				ldy #0
+.2				lda $0000,y			; read guest ZP (absolute → goes to guest AUX via READAUX)
+				sta (pZPSave),y		; write to our malloc'd save buffer
+				iny
+				bne .2
+
+				sta IO.CLRREADAUX
+				lda #0
+				sta RAMWKS.REG		; back to bank 0
+
+*--- Yield ---
+				>SLEEP
+
+*--- Resumed: restore guest ZP using WRITEAUX, then JMP to HostPC ---
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETWRITEAUX	; writes go to guest AUX
+
+				ldy #0
+.3				lda (pZPSave),y		; read from save buffer (our ZP)
+				sta $0000,y			; write to guest ZP (absolute → guest AUX via WRITEAUX)
+				iny
+				bne .3
+
+				sta IO.CLRWRITEAUX
+				; HostBnk still selected via RAMWKS.REG
+
+*--- JMP to guest resume address ---
+				lda HostPC
+				sta .4+1
+				lda HostPC+1
+				sta .4+2
+.4				jmp $0000
+
+*--------------------------------------
+CS.SIG			sec
+				rts
+*--------------------------------------
+CS.QUIT
+*--- Free ZP save buffer ---
+				>SS
+				>PUSHW pZPSave
+				>LIBC Free
+				>SR
+
+*--- Remove MLI shim: restore ProDOS stub (JSR $BF03) ---
+				sta IO.CLRWRITEAUX
+				lda #$20			; JSR
+				sta MLI.ENTRY+0
+				lda #$03
+				sta MLI.ENTRY+1
+				lda #$BF
+				sta MLI.ENTRY+2
+				sta IO.SETWRITEAUX
+
+				clc
+				rts
+
+*======================================
+* ProDOS MLI Shim  (Phase 2)
+*
+* Called via JMP from MAIN $BF00 when guest executes JSR $BF00.
+* On entry: guest bank (HostBnk) is selected; stack has return address
+* (from JSR $BF00) in HostBnk page-1; bank-0 code is executing because
+* AUX code addresses $2000+ map to bank-0 when RAMWKS.REG=0.
+* Actually after JMP from MAIN $BF00 we ARE in bank-0 AUX (A2osX GP).
+*
+* Stack after JSR $BF00 (3-byte instruction in guest):
+*   guest page-1 at SP+1 = lo of (caller_PC+2)
+*   guest page-1 at SP+2 = hi of (caller_PC+2)
+*
+* Immediately after the JSR, the byte layout at the call site is:
+*   caller_PC+0 : $20  (JSR opcode)
+*   caller_PC+1 : $00  (lo of $BF00)
+*   caller_PC+2 : $BF  (hi of $BF00)
+*   caller_PC+3 : call-number byte
+*   caller_PC+4 : param-ptr lo
+*   caller_PC+5 : param-ptr hi
+*   caller_PC+6 : (next instruction)
+*
+* Pushed return address = caller_PC+2 (RTS convention).
+* True inline-parameter start = caller_PC+3 = (return_addr)+1.
+*======================================
+MLI.Shim.Dispatch
+*--- Set up access to guest bank stack and code ---
+*   Select guest bank + ALTZP so PLA reads from guest page-1,
+*   and (ptr),y reads from guest AUX at addresses in guest ZP.
+*   IMPORTANT: While ALTZP is on, our own ZP is not accessible.
+*   We must use registers only, then store to our ZP after clearing ALTZP.
+*---
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETALTZP
+
+*--- Pop return address from guest stack (JSR $BF00 pushed caller_PC+2) ---
+				pla					; lo of (caller_PC+2) from guest page-1
+				tax					; save lo in X
+				pla					; hi of (caller_PC+2) from guest page-1
+				; now X=lo, A=hi of the return address (caller_PC+2)
+
+*--- Advance by 1: address of call-number byte = caller_PC+3 ---
+				; lo+1, propagating carry to hi
+				inx
+				bne .1
+				; X wrapped around (was $FF), carry to A
+				inc					; A = hi+1
+.1
+				; X = lo of call-number addr, A = hi
+				; Store temporarily in our ZPPtr1 via page-1 trick:
+				; Actually we can't use ZPPtr1 (it's in guest ZP now).
+				; Use ZPTMP trick: use pStack area which lives in MAIN ZP.
+				; Actually: use ALTZP mode but push/pop to handle:
+				; Best: push A to guest page-1 for temporary storage.
+				pha					; hi of call-addr on guest stack
+
+*--- Read call-number from guest AUX at (X,A) without ZP-indirect ---
+*   We don't have a direct (abs) read; use the STA (zp),Y trick in AUX.
+*   Actually: set ZPPtr1 to call-addr via ALTZP.
+*   ZPPtr1 is at ZPBIN+6 = $E6 in our ZP.
+*   In guest ZP, $E6 might be anything.
+*   Store via inlined absolute STA to our ZP even when ALTZP active?
+*   No, STA zp goes to guest ZP when ALTZP on.
+*
+*   Alternative: use READAUX (clear ALTZP, set READAUX).
+*   But then PHA/PLA goes to bank-0 page-1.
+*   We already popped from guest page-1 above.  Now we need to READ
+*   from guest AUX (code area) at the call-site address.  For reading
+*   from guest AUX (not ZP/page-1), use READAUX without ALTZP.
+*   The call-site address (lo=X, hi=recovered from stack) is in guest
+*   AUX $2000+ range, not ZP.  We can use READAUX for that.
+*---
+				pla					; recover hi from stack (pushed above)
+				; A=hi, X=lo of call-number address
+
+*--- Switch to READAUX (no ALTZP) to read guest code area ---
+				sta IO.CLRALTZP		; clear ALTZP: OUR ZP is accessible again
+*   READAUX still active (HostBnk selected = guest AUX for reads).
+*   Now store X (lo) and A (hi) into ZPPtr1.
+				stx ZPPtr1
+				sta ZPPtr1+1
+
+*   Set READAUX to read from guest AUX
+				sta IO.SETREADAUX
+
+*--- Read call number at (ZPPtr1) ---
+				lda (ZPPtr1)		; call-number from guest AUX
+				sta ZPPtr3
+
+*--- Advance ZPPtr1 by 1: param-ptr lo ---
+				inc ZPPtr1
+				bne .2
+				inc ZPPtr1+1
+.2
+*--- Read 2-byte param-ptr ---
+				ldy #0
+				lda (ZPPtr1),y
+				sta ZPPtr2
+				iny
+				lda (ZPPtr1),y
+				sta ZPPtr2+1
+
+*--- ZPPtr1 is now at param-ptr lo.  Advance by 2 to param-ptr hi+1. ---
+*   Return address should point to caller_PC+6 (past call#+2-byte-ptr).
+*   ZPPtr1 currently at +4 (param-ptr lo), need +6: advance by 2.
+				clc
+				lda ZPPtr1
+				adc #2
+				sta ZPPtr1
+				bcc .3
+				inc ZPPtr1+1
+.3
+
+*--- Clear READAUX; restore bank 0 ---
+				sta IO.CLRREADAUX
+				lda #0
+				sta RAMWKS.REG
+
+*--- Push adjusted return address back to guest page-1 ---
+*   Technique: load lo/hi into X,Y while ALTZP is off (our ZP accessible).
+*   Then SETALTZP so PHA targets GUEST page-1.
+*   6502 push convention: push hi first (SP+2=hi, SP+1=lo after push pair).
+				ldx ZPPtr1			; X = lo of adjusted return addr
+				ldy ZPPtr1+1		; Y = hi
+
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETALTZP		; ALTZP on; X,Y hold the address bytes safely in CPU regs
+
+				tya					; hi → A
+				pha					; push hi to GUEST page-1
+				txa					; lo → A
+				pha					; push lo to GUEST page-1
+
+				sta IO.CLRALTZP
+				lda #0
+				sta RAMWKS.REG
+
+*--- Dispatch on call number saved in ZPPtr3 ---
+				lda ZPPtr3
+
+				cmp #MLI.QUIT
+				beq MLI.QUIT_
+				cmp #MLI.OPEN
+				beq MLI.OPEN_
+				cmp #MLI.CLOSE
+				beq MLI.CLOSE_
+				cmp #MLI.READ
+				beq MLI.READ_
+				cmp #MLI.WRITE
+				beq MLI.WRITE_
+				cmp #MLI.SETPREFIX
+				beq MLI.SETPREFIX_
+				cmp #MLI.GETPREFIX
+				beq MLI.GETPREFIX_
+
+*--- Unsupported call ---
+				lda #$4B			; MLI error: unsupported call
+				sec
+				rts
+
+*--------------------------------------
+* MLI.QUIT  ($65): request process termination
+*--------------------------------------
+MLI.QUIT_
+				lda #1
+				sta bGoQuit
+				lda #0
+				clc
+				rts
+
+*--------------------------------------
+* Helper: MLI.GetGuestPtr
+* In:  ZPPtr2 → param block in guest bank; Y = offset within block
+* Out: ZPPtr4 = 2-byte pointer read from param block
+* Note: uses READAUX (not ALTZP) so our ZP remains accessible.
+*--------------------------------------
+MLI.GetGuestPtr
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETREADAUX
+				lda (ZPPtr2),y		; lo byte from guest AUX at ZPPtr2+Y
+				sta ZPPtr4
+				iny
+				lda (ZPPtr2),y		; hi byte
+				sta ZPPtr4+1
+				sta IO.CLRREADAUX
+				lda #0
+				sta RAMWKS.REG
+				rts
+
+*--------------------------------------
+* Helper: MLI.ReadGuestByte
+* In:  ZPPtr2 → param block; Y = offset
+* Out: A = byte
+* Note: uses READAUX so our ZP stays accessible.
+*--------------------------------------
+MLI.ReadGuestByte
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETREADAUX
+				lda (ZPPtr2),y
+				pha
+				sta IO.CLRREADAUX
+				lda #0
+				sta RAMWKS.REG
+				pla
+				rts
+
+*--------------------------------------
+* Helper: MLI.WriteGuestWord
+* In:  ZPPtr2 → param block; Y = offset; A = lo, X = hi
+* Write word A,X to guest param block at offset Y.
+* Note: uses WRITEAUX so our ZP stays accessible.
+*--------------------------------------
+MLI.WriteGuestWord
+				pha					; save lo
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETWRITEAUX
+				pla
+				sta (ZPPtr2),y		; write lo to guest AUX
+				txa
+				iny
+				sta (ZPPtr2),y		; write hi to guest AUX
+				sta IO.CLRWRITEAUX
+				lda #0
+				sta RAMWKS.REG
+				rts
+
+*--------------------------------------
+* Helper: CopyPascalToAsciz
+* In:  ZPPtr4 → Pascal string in GUEST bank (guest bank in RAMWKS.REG,
+*      READAUX set on entry).
+*      HostBnk already written to RAMWKS.REG and IO.SETREADAUX active.
+* Out: MLI.PathBuf = ASCIZ string; READAUX cleared, bank 0 restored.
+* Note: uses READAUX (not ALTZP) so our ZP stays accessible.
+*--------------------------------------
+CopyPascalToAsciz
+*   Guest bank + READAUX already active on entry.
+				ldy #0
+				lda (ZPPtr4),y		; Pascal length byte (reads from guest AUX)
+				tax
+				iny
+.1			lda (ZPPtr4),y		; char from guest AUX
+				sta MLI.PathBuf-1,y	; store in our AUX bank-0 buf
+				iny
+				dex
+				bne .1
+				lda #0
+				sta MLI.PathBuf-1,y	; NUL terminator
+*   Restore
+				sta IO.CLRREADAUX
+				lda #0
+				sta RAMWKS.REG
+				rts
+
+*--------------------------------------
+* MLI.OPEN  ($C8)
+*   Param block: +0,+1 = pathname-ptr, +2,+3 = io-buf, +4 = ref-num (out)
+*--------------------------------------
+MLI.OPEN_
+*   Read pathname-ptr from guest param block
+				ldy #0
+				jsr MLI.GetGuestPtr	; ZPPtr4 = pathname ptr
+
+*   Copy Pascal name to MLI.PathBuf
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETREADAUX	; use READAUX, not ALTZP
+				jsr CopyPascalToAsciz	; exits with CLRREADAUX + bank-0 restored
+
+				>SS
+				>PUSHW L.MLI.PathBuf
+				>PUSHBI O.RDONLY
+				>PUSHBI S.FI.T.BIN
+				>PUSHWZ
+				>LIBC FOpen
+				>SR
+				bcs .9
+
+*   A = pFILE lo (ref-num); store in param block offset +4 (guest bank)
+				ldy #4
+				ldx #0
+				jsr MLI.WriteGuestWord	; write A,X at ZPPtr2+4
+
+				clc
+				rts
+.9
+				sec
+				rts
+
+*--------------------------------------
+* MLI.CLOSE  ($CC)
+*   Param block: +0 = ref-num
+*--------------------------------------
+MLI.CLOSE_
+				ldy #0
+				jsr MLI.ReadGuestByte	; A = ref-num
+				sta ZPPtr4
+				stz ZPPtr4+1
+
+				>SS
+				>PUSHW ZPPtr4
+				>LIBC FClose
+				>SR
+				rts
+
+*--------------------------------------
+* MLI.READ  ($CA)
+*   Param block: +0=ref, +1,+2=buf, +3,+4=req-cnt, +5,+6=trans-cnt(out)
+*   Set A2osX.IOOpt = HostBnk so FRead writes data to guest bank.
+*--------------------------------------
+MLI.READ_
+*   ref-num
+				ldy #0
+				jsr MLI.ReadGuestByte
+				sta ZPPtr3
+				stz ZPPtr3+1
+
+*   buf ptr
+				ldy #1
+				jsr MLI.GetGuestPtr	; ZPPtr4 = buf ptr in guest bank
+
+*   req-count (using READAUX so our ZPPtr2 is accessible)
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETREADAUX
+				ldy #3
+				lda (ZPPtr2),y
+				sta ZPPtr1
+				iny
+				lda (ZPPtr2),y
+				sta ZPPtr1+1
+				sta IO.CLRREADAUX
+				lda #0
+				sta RAMWKS.REG
+
+*   Save + set IOOpt to route FRead output to guest bank
+				lda A2osX.IOOpt
+				pha
+				lda HostBnk
+				sta A2osX.IOOpt
+
+				>SS
+				>PUSHW ZPPtr3
+				>PUSHW ZPPtr4
+				>PUSHW ZPPtr1
+				>LIBC FRead
+				>SR
+
+*   Restore IOOpt regardless of error
+				pla
+				sta A2osX.IOOpt
+
+				bcs .9
+
+				sta ZPPtr1
+				tya
+				sta ZPPtr1+1
+
+				lda ZPPtr1
+				ldx ZPPtr1+1
+				ldy #5
+				jsr MLI.WriteGuestWord
+
+				clc
+				rts
+.9
+				sec
+				rts
+
+*--------------------------------------
+* MLI.WRITE  ($CB)
+*   Param block: same layout as READ.
+*   FWrite reads from buf in guest bank (IOOpt = HostBnk).
+*--------------------------------------
+MLI.WRITE_
+				ldy #0
+				jsr MLI.ReadGuestByte
+				sta ZPPtr3
+				stz ZPPtr3+1
+
+				ldy #1
+				jsr MLI.GetGuestPtr	; ZPPtr4 = buf ptr
+
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETREADAUX
+				ldy #3
+				lda (ZPPtr2),y
+				sta ZPPtr1
+				iny
+				lda (ZPPtr2),y
+				sta ZPPtr1+1
+				sta IO.CLRREADAUX
+				lda #0
+				sta RAMWKS.REG
+
+				lda A2osX.IOOpt
+				pha
+				lda HostBnk
+				sta A2osX.IOOpt
+
+				>SS
+				>PUSHW ZPPtr3
+				>PUSHW ZPPtr4
+				>PUSHW ZPPtr1
+				>LIBC FWrite
+				>SR
+
+				pla
+				sta A2osX.IOOpt
+
+				bcs .9
+
+				sta ZPPtr1
+				tya
+				sta ZPPtr1+1
+
+				lda ZPPtr1
+				ldx ZPPtr1+1
+				ldy #5
+				jsr MLI.WriteGuestWord
+
+				clc
+				rts
+.9
+				sec
+				rts
+
+*--------------------------------------
+* MLI.SETPREFIX  ($C6)
+*   Param block: +0,+1 = pathname-ptr
+*--------------------------------------
+MLI.SETPREFIX_
+				ldy #0
+				jsr MLI.GetGuestPtr	; ZPPtr4 = pathname ptr
+
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETREADAUX	; read from guest AUX (not ALTZP)
+				jsr CopyPascalToAsciz
+
+				>LDYA L.MLI.PathBuf	; Y=lo, A=hi of MLI.PathBuf address
+				>LIBC ChDir
+				rts
+
+*--------------------------------------
+* MLI.GETPREFIX  ($C7)
+*   Param block: +0,+1 = buf ptr (for Pascal string result)
+*--------------------------------------
+MLI.GETPREFIX_
+				ldy #0
+				jsr MLI.GetGuestPtr	; ZPPtr4 = dest buf in guest
+
+				>SS
+				>PUSHW L.MLI.PathBuf	; buf = MLI.PathBuf
+				>PUSHWI 64
+				>LIBC GetCWD
+				>SR
+				bcs .9
+
+*   Convert ASCIZ MLI.PathBuf to Pascal string; write to guest buf
+				ldy #0
+.1			lda MLI.PathBuf,y
+				beq .2
+				iny
+				bra .1
+.2			; Y = string length
+				lda HostBnk
+				sta RAMWKS.REG
+				sta IO.SETWRITEAUX	; write to guest AUX (not ALTZP)
+
+				tya
+				sta (ZPPtr4)		; Pascal length byte (ZPPtr4 in our ZP, writes to guest AUX)
+
+				ldy #0
+.3			lda MLI.PathBuf,y
+				beq .4
+				iny
+				sta (ZPPtr4),y
+				bra .3
+.4
+				sta IO.CLRWRITEAUX
+				lda #0
+				sta RAMWKS.REG
+
+				clc
+				rts
+.9
+				sec
+				rts
+
+CS.END			.EQ *
+*--------------------------------------
+MSG.USAGE		.AS "Usage: loadapp <path> [load-addr]"
+				.DA #13,#0
+MLI.PathBuf		.BS 65			64-char ASCIZ path + NUL terminator
+*--------------------------------------
+ID.END			.EQ *
+*--------------------------------------
+				.DUMMY
+				.OR 0
+DS.END			.ED
+
+*--------------------------------------
+MAN
+SAVE usr/src/sbin/loadapp.s
+LOAD usr/src/sbin/loadapp.s
+ASM

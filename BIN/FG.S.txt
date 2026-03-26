@@ -1,0 +1,261 @@
+NEW
+  AUTO 3,1
+				.LIST OFF
+				.OP	65C02
+				.OR	$2000
+				.TF bin/fg
+*--------------------------------------
+				.INB inc/macros.i
+				.INB inc/a2osx.i
+				.INB inc/a2osx.api.i
+				.INB inc/kernel.i
+*--------------------------------------
+* pPSs[] is the kernel's process-slot table.  Each 2-byte entry
+* holds the direct pointer to that slot's S.PS struct in MAIN RAM.
+* We compute the address from known kernel layout constants.
+* Slot 0 = kernel (skip), slot 2 = first user process.
+*--------------------------------------
+pPSs			.EQ pFDs+K.FD.MAX*2+K.FD.MAX*2+K.FILE.MAX*2
+*--------------------------------------
+				.DUMMY
+				.OR ZPBIN
+ZS.START
+ZPTargetPSPtr	.BS 2				raw ptr to target's actual S.PS struct
+ZPPSPtr			.BS 2				ptr to S.PS snapshot (GetPSByID copy)
+MyPPID			.BS 2				our parent PID (= shell PID)
+MyPID			.BS 2				our own PID (skip in enumeration)
+TargetPID		.BS 2				PID of the job to foreground
+TargetIndex		.BS 1				pPSs[] byte-offset when target was found
+WantJob			.BS 1				1-based job number requested (default 1)
+JobNum			.BS 1				running count during child enumeration
+Index			.BS 1				current pPSs[] byte-offset (2, 4, 6 ...)
+ZS.END
+				.ED
+*--------------------------------------
+*			File Header (16 Bytes)
+*--------------------------------------
+CS.START		cld
+				jmp (.1,x)
+				.DA #$61				6502,Level 1 (65c02)
+				.DA #2					BIN Layout Version 2
+				.DA #0					S.PS.F.SIG
+				.DA #0
+				.DA CS.END
+				.DA ID.END
+				.DA DS.END
+				.DA #64					Stack Size
+				.DA #ZS.END-ZS.START	Zero Page Size
+*--------------------------------------
+* Relocation Table
+*--------------------------------------
+.1				.DA CS.INIT
+				.DA CS.RUN
+				.DA CS.SIG
+				.DA CS.QUIT
+L.MSG.USAGE		.DA MSG.USAGE
+L.MSG.NOJOB		.DA MSG.NOJOB
+				.DA 0
+*--------------------------------------
+CS.INIT			clc
+				rts
+*--------------------------------------
+CS.SIG			clc
+				rts
+*--------------------------------------
+* CS.RUN - main logic
+*
+* FIRST CALL (TargetPID == 0):
+*   1. Parse optional [job#] arg (default = 1).
+*   2. Record own PID and PPID (= shell PID).
+*   3. Enumerate PS table: find the WantJob-th child of shell.
+*   4. Via pPSs[], get raw pointer to target's actual S.PS.
+*   5. Copy our pStdIn/pStdOut into target's pStdIn/pStdOut.
+*   6. Set S.PS.F.HOLD on our pPS with CPID = TargetPID.
+*   7. Return CLC -- scheduler suspends fg until target exits.
+*
+* SECOND CALL (TargetPID != 0, scheduler woke us after target exit):
+*   8. Return SEC - fg process exits cleanly.
+*--------------------------------------
+CS.RUN
+* Wakeup check: if TargetPID set, target has exited, we can exit.
+				lda TargetPID
+				ora TargetPID+1
+				bne .9				wakeup -- exit cleanly
+
+* Step 1: Parse optional job number arg; default = 1.
+				lda #1
+				sta WantJob
+
+				lda #1
+				>KAPI ArgV
+				bcs .1				no argument -> use default
+
+				>LIBC AToI
+				bcs .80				not a valid decimal
+
+				pha					save hi byte
+				tya					lo byte
+				sta WantJob
+				pla					restore hi byte
+				bne .80				hi != 0: number > 255, invalid
+				lda WantJob
+				beq .80				= 0: invalid job number
+
+* Step 2: Record our own PID and PPID.
+.1				ldy #S.PS.PID
+				lda (pPS),y
+				sta MyPID
+				iny
+				lda (pPS),y
+				sta MyPID+1
+
+				ldy #S.PS.PPID
+				lda (pPS),y
+				sta MyPPID
+				iny
+				lda (pPS),y
+				sta MyPPID+1
+
+* Step 3: Enumerate PS table to find the WantJob-th background child.
+				stz JobNum
+				stz TargetPID
+				stz TargetPID+1
+				lda #2				slot 2 = first user process
+				sta Index
+
+.2				lda Index
+				>KAPI GetPSByID
+				bcs .7				empty/invalid slot
+
+				>STYA ZPPSPtr
+
+* Skip our own process.
+				ldy #S.PS.PID
+				lda (ZPPSPtr),y
+				cmp MyPID
+				bne .3
+				iny
+				lda (ZPPSPtr),y
+				cmp MyPID+1
+				beq .6				this is us, skip
+
+* Check PPID == shell PID (direct child of our shell).
+.3				ldy #S.PS.PPID
+				lda (ZPPSPtr),y
+				cmp MyPPID
+				bne .6
+				iny
+				lda (ZPPSPtr),y
+				cmp MyPPID+1
+				bne .6
+
+* Count this background child.
+				inc JobNum
+				lda JobNum
+				cmp WantJob
+				bne .6				not the one we want yet
+
+* Found it -- save PID and slot byte-offset.
+				ldy #S.PS.PID
+				lda (ZPPSPtr),y
+				sta TargetPID
+				iny
+				lda (ZPPSPtr),y
+				sta TargetPID+1
+				lda Index
+				sta TargetIndex
+
+				>LDYA ZPPSPtr
+				>LIBC Free
+				stz ZPPSPtr+1
+				bra .10				skip rest of enumeration
+
+.6				>LDYA ZPPSPtr
+				>LIBC Free
+				stz ZPPSPtr+1
+
+.7				inc Index
+				inc Index
+				lda Index
+				cmp #K.PS.MAX*2
+				bcc .2
+
+* Enumeration done.  Did we find the target job?
+				lda TargetPID
+				ora TargetPID+1
+				bne .10				yes - found
+
+.90				>LDYA L.MSG.NOJOB
+				>LIBC PutS
+				lda #E.BADARG
+				sec
+				rts
+
+.80				>LDYA L.MSG.USAGE
+				>LIBC PutS
+				lda #E.SYN
+				sec
+				rts
+
+* Step 4: Get raw pointer to target's actual S.PS struct.
+* pPSs[TargetIndex] holds the (lo,hi) pointer.
+.10				ldx TargetIndex
+				ldy pPSs,x			Y = lo byte of actual PS ptr
+				lda pPSs+1,x		A = hi byte
+				sty ZPTargetPSPtr
+				sta ZPTargetPSPtr+1
+
+* Step 5: Copy our pStdIn and pStdOut into target's S.PS.
+				ldy #S.PS.pStdIn
+				lda (pPS),y
+				sta (ZPTargetPSPtr),y
+				iny
+				lda (pPS),y
+				sta (ZPTargetPSPtr),y
+
+				ldy #S.PS.pStdOut
+				lda (pPS),y
+				sta (ZPTargetPSPtr),y
+				iny
+				lda (pPS),y
+				sta (ZPTargetPSPtr),y
+
+* Step 6: Set HOLD on our own pPS with CPID = TargetPID.
+* Scheduler skips HOLD'd processes until CPID exits.
+				ldy #S.PS.CPID
+				lda TargetPID
+				sta (pPS),y
+				iny
+				lda TargetPID+1
+				sta (pPS),y
+
+				ldy #S.PS.F
+				lda (pPS),y
+				ora #S.PS.F.HOLD
+				sta (pPS),y
+
+				clc					suspended until target exits
+				rts
+
+* Wakeup: target exited, scheduler cleared our HOLD and resumed us.
+.9				lda #0
+				sec					signal fg to exit
+				rts
+*--------------------------------------
+CS.QUIT			clc
+				rts
+*--------------------------------------
+CS.END			.EQ *
+*--------------------------------------
+MSG.USAGE		.CZ "Usage: fg [job#]"
+MSG.NOJOB		.CZ "fg: no such job"
+*--------------------------------------
+ID.END			.EQ *
+*--------------------------------------
+				.DUMMY
+				.OR 0
+DS.END			.ED
+*--------------------------------------
+MAN
+SAVE usr/src/bin/fg.s
+ASM
