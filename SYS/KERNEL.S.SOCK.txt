@@ -4,8 +4,14 @@ NEW
 SOCK.Open		ldy IO.hFD
 				lda #0					return int
 *--------------------------------------
-SOCK.Close		clc
-				rts
+SOCK.Close		ldx IO.hFD
+				lda pNames+1,x
+				beq .1
+				stz pNames+1,x
+				ldy pNames,x
+				jsr MEM.FreeYA
+.1				ldx #10					Shutdown command
+				jmp K.2KM.FD			dispatch to AF shutdown -> sends FIN
 *--------------------------------------
 * From UNISTD.Read
 *--------------------------------------
