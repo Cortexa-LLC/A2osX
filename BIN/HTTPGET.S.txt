@@ -79,6 +79,7 @@ L.MSG.IOERR		.DA MSG.IOERR
 L.MSG.FileLength	.DA MSG.FileLength
 L.MSG.Progress	.DA MSG.Progress
 L.HTTP.GET		.DA HTTP.GET
+L.MSG.ROOT		.DA MSG.ROOT
 				.DA 0
 *--------------------------------------
 CS.INIT			>LDYA L.LIBTCPIP
@@ -223,8 +224,10 @@ CS.RUN.ESYN2	lda #E.SYN
 				rts
 *--------------------------------------
 CS.RUN.ARGSOK	lda ZPReqBufPtr+1
-				beq CS.RUN.ESYN2
-
+				bne .1
+				>LDYA L.MSG.ROOT
+				>STYA ZPReqBufPtr
+.1
 				>PUSHW L.MSG.CONNECT
 				ldx #0
 
@@ -777,7 +780,9 @@ URI.ToEncode.Cnt	.EQ	*-URI.ToEncode
 *--------------------------------------
 HEAD.ContentLength	.AZ "Content-Length: "
 *--------------------------------------
-HTTP.GET		.AS "GET /%s HTTP/1.1"
+MSG.ROOT		.AZ "/"
+*--------------------------------------
+HTTP.GET		.AS "GET %s HTTP/1.1"
 				.DA #C.CR,#C.LF
 				.AS "User-Agent: A2osX.HTTPGET"
 				.DA #C.CR,#C.LF

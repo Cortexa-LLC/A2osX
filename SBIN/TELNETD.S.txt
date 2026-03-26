@@ -184,11 +184,14 @@ CS.SIG			lda TimeOut
 
 .9				rts
 *--------------------------------------
-CS.QUIT			ldy hSrvSocket
-				beq .8
-
+CS.QUIT			ldy hCltSocket
+				beq .1
 				lda #0
+				>LIBC Shutdown
 
+.1				ldy hSrvSocket
+				beq .8
+				lda #0
 				>LIBC Shutdown
 
 .8				clc
