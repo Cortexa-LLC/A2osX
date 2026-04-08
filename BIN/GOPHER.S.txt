@@ -50,14 +50,14 @@ ZS.END			.ED
 CS.START		cld
 				jmp (.1,x)
 				.DA #$61				6502,Level 1 (65c02)
-				.DA #1					BIN Layout Version 1
+				.DA #2					BIN Layout Version 2
 				.DA #S.PS.F.EVENT		S.PS.F
 				.DA #0
-				.DA CS.END-CS.START		Code Size (without Constants)
-				.DA DS.END-DS.START		Data Segment Size
+				.DA CS.END		Code End (absolute)
+				.DA ID.END				; Reloc/ID Table End (absolute)
+				.DA DS.END		Data Segment Size
 				.DA #64					Stack Size
 				.DA #ZS.END-ZS.START	Zero Page Size
-				.DA 0
 *--------------------------------------
 .1				.DA CS.INIT
 				.DA CS.RUN
@@ -95,13 +95,15 @@ CS.INIT			>LDYA L.LIBTCPIP
 				>KAPI LoadLib
 				bcs .9
 
-				sta hLIBTCPIP
+				sty hLIBTCPIP
+				sta hLIBTCPIP+1
 
 				>LDYA L.LIBTUI
                 >KAPI LoadLib
                 bcs .9
 
-                sta hLIBTUI
+                sty hLIBTUI
+                sta hLIBTUI+1
 
 .9
 CS.INIT.RTS		rts
@@ -215,6 +217,7 @@ CS.QUIT			lda hCTX
 .10				lda hLIBTUI
                 beq .1
 
+                >LDYA hLIBTUI
                 >KAPI UnloadLib
 
 .1				lda hSocket
@@ -235,6 +238,7 @@ CS.QUIT			lda hCTX
 .4				lda hLIBTCPIP
 				beq .8
 
+				>LDYA hLIBTCPIP
 				>KAPI UnloadLib
 
 .8				clc
@@ -816,9 +820,9 @@ CS.Scr.SetStatus
 *--------------------------------------
 CS.END
 LIBTCPIP		.AZ "libtcpip"
-hLIBTCPIP		.BS 1
+hLIBTCPIP		.BS 2
 LIBTUI          .AZ "libtui"
-hLIBTUI         .BS 1
+hLIBTUI         .BS 2
 *--------------------------------------
 MSG.ScrTitle0	.CZ "A2osX-GOPHER - <Ctrl-Q>uit"
 MSG.ScrTitle	.CZ "A2osX-GOPHER %s:%D/%s - <Ctrl-Q>uit"
@@ -836,9 +840,9 @@ MSG.GOTO		.CZ "Goto: %s"
 ITEMTYPES		.AS "017i"
 ITEMTYPES.L		.EQ *-ITEMTYPES
 *--------------------------------------
+ID.END			.EQ *
 				.DUMMY
 				.OR 0
-DS.START
 SA.LOCAL		.BS S.SOCKADDR
 SA.REMOTE		.BS S.SOCKADDR
 

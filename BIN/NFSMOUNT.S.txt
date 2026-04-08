@@ -20,12 +20,14 @@ ZPFrameBase		.EQ ZPBIN+2
 CS.START		cld
 				jmp (.1,x)
 				.DA #$61				6502,Level 1 (65c02)
-				.DA #1					BIN Layout Version 1
-				.DA 0
-				.DA CS.END-CS.START		Code Length To Relocate
-				.DA DS.END-DS.START		Data Segment to Allocate
-				.DA 0
-				.DA 0
+				.DA #2					BIN Layout Version 2
+				.DA #0
+				.DA #0
+				.DA CS.END		Code Length To Relocate
+				.DA ID.END				; Reloc/ID Table End (absolute)
+				.DA DS.END		Data Segment Size
+				.DA #0
+				.DA #0
 *--------------------------------------
 .1				.DA CS.INIT
 				.DA CS.RUN
@@ -89,9 +91,9 @@ Socket.Dst.Addr	.BS 4
 Socket.Dst.Port	.DA UDP.PORT.PMAP
 				.BS 16
 *--------------------------------------
+ID.END			.EQ *
 				.DUMMY
 				.OR 0
-DS.START
 bCTRLC			.BS 1
 DS.END
 				.ED

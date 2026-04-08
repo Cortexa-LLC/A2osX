@@ -62,14 +62,14 @@ ZS.END			.ED
 CS.START		cld
 				jmp (.1,x)
 				.DA #$61				6502,Level 1 (65c02)
-				.DA #1					BIN Layout Version 1
+				.DA #2					BIN Layout Version 2
 				.DA #0					S.PS.F.EVENT
 				.DA #0
-				.DA CS.END-CS.START		Code Size (without Constants)
-				.DA DS.END-DS.START		Data SegmentSize
+				.DA CS.END		Code End (absolute)
+				.DA ID.END				; Reloc/ID Table End (absolute)
+				.DA DS.END		Data Segment Size
 				.DA #64					Stack Size
 				.DA #ZS.END-ZS.START	Zero Page Size
-				.DA 0
 *--------------------------------------
 * Relocation Table
 *--------------------------------------
@@ -809,9 +809,9 @@ CSH.FN
 *--------------------------------------
 				.DA #0
 *--------------------------------------
+ID.END			.EQ *
 				.DUMMY
 				.OR 0
-DS.START
 PathBuf			.BS 65
 
 hFileBuf		.BS 1

@@ -65,14 +65,14 @@ ZS.END			.ED
 CS.START		cld
 				jmp (.1,x)
 				.DA #$61				6502,Level 1 (65c02)
-				.DA #1					BIN Layout Version 1
+				.DA #2					BIN Layout Version 2
 				.DA #0					S.PS.F
 				.DA #0
-				.DA CS.END-CS.START		Code Length To Relocate
-				.DA DS.END-DS.START		Data Segment to Allocate
+				.DA CS.END		Code Length To Relocate
+				.DA ID.END				; Reloc/ID Table End (absolute)
+				.DA DS.END		Data Segment Size
 				.DA #16					Stack Size
 				.DA #ZS.END-ZS.START	Zero Page Size
-				.DA 0
 *--------------------------------------
 .1				.DA CS.INIT
 				.DA CS.RUN
@@ -145,15 +145,16 @@ J.IP.Keywords	.DA CS.IPR.addr
 				.DA 0
 *--------------------------------------
 CS.INIT			>LDYA L.LIBTUI
-				>SYSCALL LoadLib
+				>KAPI LoadLib
 				bcs CS.INIT.RTS
 
-				sta hLIBTUI
+				sty hLIBTUI
+				sta hLIBTUI+1
 *				clc
 CS.INIT.RTS		rts
 *--------------------------------------
 CS.RUN			>LDYAI 80
-				>SYSCALL GetMem
+				>LIBC Malloc
 				bcc .1
 				rts
 
@@ -398,7 +399,7 @@ CS.File.OpenRD	stz hFile
 				>PUSHBI	O.RDONLY
 				>PUSHBI 0				Type
 				>PUSHWZ					Aux type
-				>SYSCALL FOpen
+				>LIBC FOpen
 				bcs .9
 
 				sta hFile
@@ -408,7 +409,7 @@ CS.File.OpenRD	stz hFile
 CS.File.Read	>PUSHB hFile
 				>PUSHW ZPTmpPtr1
 				>PUSHWI 80
-				>SYSCALL FGetS
+				>LIBC FGetS
 				bcs .9
 
 				lda (ZPTmpPtr1)
@@ -422,7 +423,7 @@ CS.File.OpenWR	>PUSHYA
 				>PUSHBI O.CREATE+O.WRONLY+O.TRUNC
 				>PUSHBI $04				Type Text
 				>PUSHWZ					Aux type
-				>SYSCALL FOpen
+				>LIBC FOpen
 				bcs .9
 				sta hFile
 .9				rts
@@ -431,14 +432,14 @@ CS.File.FPutSYA	pha
 				>PUSHB hFile
 				pla
 				>PUSHYA
-				>SYSCALL FPutS
+				>LIBC FPutS
 				rts
 *--------------------------------------
 CS.File.Close	php
 				pha
 				lda hFile
 				beq .8
-				>SYSCALL FClose
+				>LIBC FClose
 .8				pla
 				plp
 				rts
@@ -1056,7 +1057,7 @@ CS.DOEVENT		sec						do not discard TIMER event
 CS.QUIT			lda hBuf1
 				beq .1
 
-				>SYSCALL FreeMem
+				>LIBC Free
 
 .1				lda hCTX
 				beq .2
@@ -1066,18 +1067,19 @@ CS.QUIT			lda hBuf1
 .2				lda hLIBTUI
 				beq .8
 
-				>SYSCALL UnloadLib
+				>LDYA hLIBTUI
+				>KAPI UnloadLib
 
 .8				clc
 				rts
 *--------------------------------------
 CS.SCRN.Draw	lda hSCRN
-				>SYSCALL GetMemPtr
+				>LIBC GetMemPtr
 				>STYA ZPPtr1
 				>PUSHEA.G SCRN.TitleBuf
 				>PUSHW L.SCRN.Title
 				>PUSHBI 0
-				>SYSCALL sprintf
+				>LIBC SPrintF
 				lda hSCRN
 				>LIBCALL hLIBTUI,LIBTUI.Draw
 				rts
@@ -1085,7 +1087,7 @@ CS.SCRN.Draw	lda hSCRN
 CS.END
 *--------------------------------------
 LIBTUI			.AZ "libtui"
-hLIBTUI			.BS 1
+hLIBTUI			.BS 2
 *--------------------------------------
 NETSTART		.AZ "${HOME}netstart"
 HOSTNAME		.AZ "${ROOT}etc/hostname"
@@ -1166,9 +1168,9 @@ NS.bbsd			.CZ "NOHUP bbsd &\r"
 IP.Hash			.AZ "#"
 HOST.Hdr		.CZ "# Put hostname here (max 15 characters)\r"
 *--------------------------------------
+ID.END			.EQ *
 				.DUMMY
 				.OR 0
-DS.START
 IFACE.Var		.BS 2
 AUTOIP.Var		.BS 2
 LIBTCPIP.Var	.BS 1

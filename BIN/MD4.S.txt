@@ -33,13 +33,13 @@ ZS.END			.ED
 CS.START		cld
 				jmp (.1,x)
 				.DA #$61				6502,Level 1 (65c02)
-				.DA #1					BIN Layout Version 1
+				.DA #2					BIN Layout Version 2
 				.DA 0
-				.DA CS.END-CS.START		CS
-				.DA DS.END-DS.START		DS
+				.DA CS.END		CS
+				.DA ID.END				; Reloc/ID Table End (absolute)
+				.DA DS.END		DS
 				.DA #16					SS
 				.DA #ZS.END-ZS.START	ZP
-				.DA 0
 *--------------------------------------
 * Relocation Table
 *--------------------------------------
@@ -55,7 +55,8 @@ CS.INIT			>LDYA L.LIBCRYPT
 				>KAPI LoadLib
 				bcs .9
 
-				sta hLIBCRYPT
+				sty hLIBCRYPT
+				sta hLIBCRYPT+1
 
 *				clc
 .9				rts
@@ -178,6 +179,7 @@ CS.DOEVENT		sec
 CS.QUIT			lda hLIBCRYPT
 				beq .1
 
+				>LDYA hLIBCRYPT
 				>KAPI UnloadLib
 
 .1				lda hDataBuf
@@ -194,16 +196,16 @@ CS.QUIT			lda hLIBCRYPT
 *--------------------------------------
 CS.END
 LIBCRYPT		.AZ "libcrypt"
-hLIBCRYPT		.BS 1
+hLIBCRYPT		.BS 2
 *--------------------------------------
 OptionList		.AS "Dd"
 OptionVars		.DA #bText,#bText
 *--------------------------------------
 MSG.USAGE		.CZ "Usage : MD4 [ -d input text | input file ]\r\n"
 *--------------------------------------
+ID.END			.EQ *
 				.DUMMY
 				.OR 0
-DS.START
 MD4Buf			.BS 33
 DS.END			.ED
 *--------------------------------------

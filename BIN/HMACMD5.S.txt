@@ -59,7 +59,8 @@ CS.INIT			>LDYA L.LIBCRYPT
 				>KAPI LoadLib
 				bcs .9
 
-				sta hLIBCRYPT
+				sty hLIBCRYPT
+				sta hLIBCRYPT+1
 
 *				clc
 .9				rts
@@ -300,6 +301,7 @@ CS.DOEVENT		sec
 CS.QUIT			lda hLIBCRYPT
 				beq .1
 
+				>LDYA hLIBCRYPT
 				>KAPI UnloadLib
 
 .1				lda hDataBuf
@@ -317,7 +319,7 @@ CS.QUIT			lda hLIBCRYPT
 CS.END			.EQ *
 *--------------------------------------
 LIBCRYPT		.AZ "libcrypt"
-hLIBCRYPT		.BS 1
+hLIBCRYPT		.BS 2
 *--------------------------------------
 OptionList		.AS "DdKk"
 OptionEnd

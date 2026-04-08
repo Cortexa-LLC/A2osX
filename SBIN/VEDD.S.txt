@@ -31,14 +31,14 @@ ZS.END			.ED
 CS.START		cld
 				jmp (.1,x)
 				.DA #$61				6502,Level 1 (65c02)
-				.DA #1					BIN Layout Version 1
+				.DA #2					BIN Layout Version 2
 				.DA #S.PS.F.EVENT
 				.DA #0
-				.DA CS.END-CS.START		Code Size (without Constants)
-				.DA DS.END-DS.START		Data SegmentSize
+				.DA CS.END		Code End (absolute)
+				.DA ID.END				; Reloc/ID Table End (absolute)
+				.DA DS.END		Data Segment Size
 				.DA #64					Stack Size
 				.DA #ZS.END-ZS.START	Zero Page Size
-				.DA 0
 *--------------------------------------
 * Relocation Table
 *--------------------------------------
@@ -64,7 +64,8 @@ CS.INIT			>LDYA L.LIBTCPIP
 				>KAPI LoadLib
 				bcs .9
 
-				sta hLIBTCPIP
+				sty hLIBTCPIP
+				sta hLIBTCPIP+1
 
 *				clc
 .9
@@ -294,6 +295,7 @@ CS.QUIT
 				lda hLIBTCPIP
 .7				beq .8
 
+				>LDYA hLIBTCPIP
 				>KAPI UnloadLib
 
 .8				clc
@@ -308,7 +310,7 @@ CS.END
 * Initialized DATA
 *--------------------------------------
 LIBTCPIP		.AZ "libtcpip"
-hLIBTCPIP		.BS 1
+hLIBTCPIP		.BS 2
 *--------------------------------------
 MSG.USAGE		.AZ "Usage : VEDD <ip|host> [port]"
 MSG.TCPIPERR	.AZ "VEDD:TCP/IP Not initialized properly."
@@ -322,9 +324,9 @@ ADT.REQ			.DA #ADT.CMD.VSD
 				.HS 030000C6			READ D1, BLK 0
 ADT.REQ.LEN 	.EQ *-ADT.REQ
 *--------------------------------------
+ID.END			.EQ *
 				.DUMMY
 				.OR 0
-DS.START
 SA.LOCAL		.BS 1					S.SOCKADDR.AF
 				.BS 1
 				.BS 4					S.SOCKADDR.ADDR

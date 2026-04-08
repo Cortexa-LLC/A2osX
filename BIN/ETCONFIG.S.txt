@@ -40,14 +40,14 @@ ZS.END			.ED
 CS.START		cld
 				jmp (.1,x)
 				.DA #$61				6502,Level 1 (65c02)
-				.DA #1					BIN Layout Version 1
+				.DA #2					BIN Layout Version 2
 				.DA #S.PS.F.EVENT
 				.DA #0
-				.DA CS.END-CS.START		Code Size (without Constants)
-				.DA DS.END-DS.START		Data SegmentSize
+				.DA CS.END		Code End (absolute)
+				.DA ID.END				; Reloc/ID Table End (absolute)
+				.DA DS.END		Data Segment Size
 				.DA #64					Stack Size
 				.DA #ZS.END-ZS.START	Zero Page Size
-				.DA 0
 *--------------------------------------
 * Relocation Table
 *--------------------------------------
@@ -92,7 +92,8 @@ CS.INIT			>LDYA L.LIBETALK
 				>KAPI LoadLib
 				bcs .9
 
-				sta hLIBETALK
+				sty hLIBETALK
+				sta hLIBETALK+1
 
 .9				rts
 *--------------------------------------
@@ -586,6 +587,7 @@ CS.DOEVENT		lda (pEvent)
 CS.QUIT			lda hLIBETALK
 				beq .8
 
+				>LDYA hLIBETALK
 				>KAPI UnloadLib
 
 .8				clc
@@ -593,7 +595,7 @@ CS.QUIT			lda hLIBETALK
 *--------------------------------------
 CS.END
 LIBETALK		.AZ "libetalk"
-hLIBETALK		.BS	1
+hLIBETALK		.BS 2
 *--------------------------------------
 MSG.USAGE		.CZ "Usage : ETCONFIG\r\n"
 *--------------------------------------
@@ -693,9 +695,9 @@ NBP.Browse		.PS "="
 				.PS "*"
 				.HS 00
 *--------------------------------------				
+ID.END			.EQ *
 				.DUMMY
 				.OR 0
-DS.START
 DIB				.BS S.DIB
 DEV.IOCTL		.BS S.IOCTL
 DCB.NIC			.BS S.DCB.NIC

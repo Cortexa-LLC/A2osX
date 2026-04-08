@@ -19,14 +19,14 @@ ZPPTR1			.EQ ZPBIN
 CS.START		cld
 				jmp (.1,x)
 				.DA #$61				6502,Level 1 (65c02)
-				.DA #1					BIN Layout Version 1
+				.DA #2					BIN Layout Version 2
 				.DA #S.PS.F.EVENT
 				.DA #0
-				.DA CS.END-CS.START		CS
-				.DA DS.END-DS.START		DS
+				.DA CS.END		CS
+				.DA ID.END				; Reloc/ID Table End (absolute)
+				.DA DS.END		DS
 				.DA #64					SS
 				.DA #2					ZP
-				.DA 0
 *--------------------------------------
 * Relocation Table
 *--------------------------------------
@@ -47,7 +47,8 @@ CS.INIT			>LDYA L.LIBETALK
 				>KAPI LoadLib
 				bcs .9
 
-				sta hLIBETALK
+				sty hLIBETALK
+				sta hLIBETALK+1
 
 .9				rts
 *--------------------------------------
@@ -222,6 +223,7 @@ CS.DOEVENT		lda (pEvent)
 CS.QUIT			lda hLIBETALK
 				beq .8
 
+				>LDYA hLIBETALK
 				>KAPI UnloadLib
 
 .8				clc
@@ -244,7 +246,7 @@ Wait.TimeOut	sec
 *--------------------------------------
 CS.END
 LIBETALK		.AZ "libetalk"
-hLIBETALK		.BS 1
+hLIBETALK		.BS 2
 SSCANF.ADDR		.AZ "%D.%d"
 SSCANF.MAC		.AZ "%h:%h:%h:%h:%h:%h"
 MSG.Usage		.CS "Usage : AARP, display AARP cache\r\n"
@@ -254,9 +256,9 @@ MSG0			.CZ "STS TTL   MAC Address       net.nod"
 MSG1			.CZ "$%h %5D %h:%h:%h:%h:%h:%h %D.%d\r\n"
 MSG2			.CZ "%D%d is at %h:%h:%h:%h:%h:%h\r\n"
 *--------------------------------------
+ID.END			.EQ *
 				.DUMMY
 				.OR 0
-DS.START
 DST.ADDR		.BS 4
 DST.MAC			.BS 6
 TimeOut			.BS 1

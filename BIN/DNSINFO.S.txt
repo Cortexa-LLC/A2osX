@@ -22,14 +22,14 @@ ZS.END			.ED
 CS.START		cld
 				jmp (.1,x)
 				.DA #$61				6502,Level 1 (65c02)
-				.DA #1					BIN Layout Version 1
+				.DA #2					BIN Layout Version 2
 				.DA #0					S.PS.F.EVENT
 				.DA #0
-				.DA CS.END-CS.START		Code Size (without Constants)
-				.DA DS.END-DS.START		Data Segment Size
+				.DA CS.END		Code End (absolute)
+				.DA ID.END				; Reloc/ID Table End (absolute)
+				.DA DS.END		Data Segment Size
 				.DA #32					Stack Size
 				.DA #ZS.END-ZS.START	Zero Page Size
-				.DA 0
 *--------------------------------------
 * Relocation Table
 *--------------------------------------
@@ -51,7 +51,8 @@ L.MSG.USAGE		.DA MSG.USAGE
 CS.INIT			>LDYA L.LIBTCPIP
 				>KAPI LoadLib
 				bcs .9
-				sta hLIBTCPIP
+				sty hLIBTCPIP
+				sta hLIBTCPIP+1
 
 .9				rts
 *--------------------------------------
@@ -180,13 +181,14 @@ CS.EVENT		sec
 *--------------------------------------
 CS.QUIT			lda hLIBTCPIP
 				beq .8
+				>LDYA hLIBTCPIP
 				>KAPI UnloadLib
 .8				clc
 				rts
 *--------------------------------------
 CS.END
 LIBTCPIP		.AZ "libtcpip"
-hLIBTCPIP		.BS 1
+hLIBTCPIP		.BS 2
 SSCANF.IP		.AZ "%d.%d.%d.%d"
 *--------------------------------------
 MSG.IPKO		.CZ "TCP/IP Not Loaded/Configured."
@@ -198,9 +200,9 @@ MSG1.D			.CZ "Dynamic"
 MSG.USAGE		.CS "Usage : Add a static entry, DNSINFO <host> <IP>\r\n"
 				.CZ "        Dump DNS Cache, DNSINFO\r\n"
 *--------------------------------------
+ID.END			.EQ *
 				.DUMMY
 				.OR 0
-DS.START
 DST.IP			.BS 4
 DS.END			.ED
 *--------------------------------------

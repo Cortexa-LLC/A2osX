@@ -25,13 +25,13 @@ ZS.END			.ED
 CS.START		cld
 				jmp (.1,x)
 				.DA #$61				6502,Level 1 (65c02)
-				.DA #1					BIN Layout Version 1
+				.DA #2					BIN Layout Version 2
 				.DA 0
-				.DA CS.END-CS.START		CS
-				.DA DS.END-DS.START		DS
+				.DA CS.END		CS
+				.DA ID.END				; Reloc/ID Table End (absolute)
+				.DA DS.END		DS
 				.DA #64					Stack Size
 				.DA #ZS.END-ZS.START	Zero Page Size
-				.DA 0
 *--------------------------------------
 * Relocation Table
 *--------------------------------------
@@ -307,9 +307,9 @@ MSG.PSTR		.CZ " %S\r\n"
 MSG.DUMP0		.CZ "Net  Nod SkT En# Object:Type@Zone"
 MSG.DUMP		.CZ "\e[?7l%H %h  %h  %h  %S:%S@%S\r\n"
 *--------------------------------------
+ID.END			.EQ *
 				.DUMMY
 				.OR 0
-DS.START
 P.GetInfo		.BS $0F
 P.GetZoneList	.BS $19
 P.GetMyZone		.BS $10

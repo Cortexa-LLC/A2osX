@@ -59,14 +59,14 @@ ZS.END			.ED
 CS.START		cld
 				jmp (.1,x)
 				.DA #$61				6502,Level 1 (65c02)
-				.DA #1					BIN Layout Version 1
+				.DA #2					BIN Layout Version 2
 				.DA #S.PS.F.EVENT		S.PS.F
 				.DA #0
-				.DA CS.END-CS.START		Code Size (without Constants)
-				.DA DS.END-DS.START		Data Segment Size
+				.DA CS.END		Code End (absolute)
+				.DA ID.END				; Reloc/ID Table End (absolute)
+				.DA DS.END		Data Segment Size
 				.DA #64					Stack Size
 				.DA #ZS.END-ZS.START	Zero Page Size
-				.DA 0
 *--------------------------------------
 .1				.DA CS.INIT
 				.DA CS.RUN
@@ -132,7 +132,8 @@ CS.INIT			>LDYA L.LIBTCPIP
 				>KAPI LoadLib
 				bcs .9
 
-				sta hLIBTCPIP
+				sty hLIBTCPIP
+				sta hLIBTCPIP+1
 
 .9
 CS.INIT.RTS		rts
@@ -1024,6 +1025,7 @@ CS.QUIT			ldy #hOutputBuf
 .1				lda hLIBTCPIP
 				beq .2
 
+				>LDYA hLIBTCPIP
 				>KAPI UnloadLib
 
 .2				clc
@@ -1041,7 +1043,7 @@ CS.QUIT			ldy #hOutputBuf
 *--------------------------------------
 CS.END
 LIBTCPIP		.AZ "libtcpip"
-hLIBTCPIP		.BS 1
+hLIBTCPIP		.BS 2
 MSG.IPKO		.CZ "TCP/IP Not Loaded/Configured."
 MSG.USAGE		.CZ "Usage : IRC <ip|host> <port> <nickname> <#channel> [key]"
 MSG.UNKNOWN		.CZ "%s: Unknown host\r\n"
@@ -1138,6 +1140,7 @@ TLS.HDR.L		.EQ *-TLS.HDR
 *--------------------------------------
 				.FIN
 *--------------------------------------
+ID.END			.EQ *
 				.DUMMY
 				.OR 0
 DS.START		.BS TEXTMAX+1

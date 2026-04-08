@@ -30,14 +30,14 @@ ZS.END			.ED
 CS.START		cld
 				jmp (.1,x)
 				.DA #$61				6502,Level 1 (65c02)
-				.DA #1					BIN Layout Version 1
+				.DA #2					BIN Layout Version 2
 				.DA #0					S.PS.F.EVENT
 				.DA #0
-				.DA CS.END-CS.START		Code Size (without Constants)
-				.DA DS.END-DS.START		Data Size
+				.DA CS.END		Code End (absolute)
+				.DA ID.END				; Reloc/ID Table End (absolute)
+				.DA DS.END		Data Size
 				.DA #64					Stack Size
 				.DA #ZS.END-ZS.START	Zero Page Size
-				.DA 0
 *--------------------------------------
 * Relocation Table
 *--------------------------------------
@@ -816,9 +816,9 @@ MSG.RANGE		.CZ "First/Last Char : %d/%d, Default : %d, Break : %d\r\n"
 MSG.DUMP		.CZ "Caracter ID : %d (0x0%2h), Width(P) : %d, Width(B) : %d\r\n"
 MSG.DONE		.CZ "All Done!!!\r\n"		
 *--------------------------------------
+ID.END			.EQ *
 				.DUMMY
 				.OR 0
-DS.START
 FNT.Version		.BS 1
 FON.Header		.BS	S.FON
 Count			.BS 1

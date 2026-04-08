@@ -378,7 +378,7 @@ CS.END
 
 				.DO AUTH
 LIBCRYPT		.AZ "libcrypt"
-hLIBCRYPT		.BS 1
+hLIBCRYPT		.BS 2
 				.FIN
 *--------------------------------------
 MSG.USAGE		.AZ "Usage : CIFSD <ip|host> sharename mountpoint [[domain\]user]"
